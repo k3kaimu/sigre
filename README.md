@@ -6,6 +6,12 @@
 $ sigre <nTrain> <nRegenBlockSize> <Regenerator Type> [Regenerator Parameters...] @ <Basis Function Builders...>
 ```
 
+Dockerで使う
+
+```sh
+$ docker run ghcr.io/k3kaimu/sigre:latest
+```
+
 ## Build on Docker
 
 `dffdd`ディレクトリで以下を実行します．
