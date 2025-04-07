@@ -16,12 +16,6 @@ RUN <<EOF
     /dlang/install.sh install -p /dlang ldc-1.39.0
 EOF
 
-RUN <<EOF
-    cd /root
-    git clone https://github.com/k3kaimu/carbon.git
-    git clone https://github.com/k3kaimu/lubeck.git
-EOF
-
 COPY . /root/build
 
 RUN <<EOF
