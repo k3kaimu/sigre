@@ -171,8 +171,8 @@ final class PHammLSRegenerator(C) : IRegenerator!C
         _nTaps = params[0].to!uint.failureMsg("[PHammLS] invalid number of taps '%s'".format(params[0]));
 
         immutable nTrainSamples = xsTrain[0].length;
-        enforce(nTrainSamples > _nTaps, "[PHammLS] The number of training samples must be larger than nTaps.");
-        enforce(xsTrain[0].length == ysTrain.length, "[PHammLS] The number of transmission and reception samples for training must be same.");
+        enforce(nTrainSamples > _nTaps, "[PHammLS] The number of training samples(=%s) must be larger than nTaps(=%s).".format(nTrainSamples, _nTaps));
+        enforce(xsTrain[0].length == ysTrain.length, "[PHammLS] The number of transmission(=%s) and reception samples(=%s) for training must be same.".format(xsTrain[0].length, ysTrain.length));
 
         _estCoeffs = estimateCoeffs(xsTrain, ysTrain, params);
     }
@@ -302,6 +302,66 @@ interface IBasisBuildingBlock(C)
 }
 
 
+final class Delays(C) : IBasisBuildingBlock!C
+{
+    this(string[] params)
+    {
+        _preCount = params[0].to!uint.failureMsg("[Delays] Invalid pre-delay count '%s'.".format(params[0]));
+        _postCount = params[1].to!uint.failureMsg("[Delays] Invalid post-delay count '%s'.".format(params[1]));
+    }
+
+
+    C[][] generate(in C[][] xs)
+    {
+        enforce(xs.length == 1, "[Delays] Invalid input dimension which must be 1.");
+        return generateImpl(xs[0]);
+    }
+
+
+    C[][] generateImpl(C)(in C[] xs)
+    {
+        immutable nSamples = xs.length;
+
+        C[][] applied = new C[][](_preCount + _postCount + 1, nSamples);
+        applied[0][] = xs[];
+
+        foreach(i; 1 .. _postCount + 1) {
+            foreach(j; 0 .. nSamples)
+                applied[i][j] = (j >= i) ? xs[j - i] : C(0, 0);
+        }
+
+        foreach(i; 1 .. _preCount + 1) {
+            foreach(j; 0 .. nSamples)
+                applied[_postCount + i][j] = (j + i < nSamples) ? xs[j + i] : C(0, 0);
+        }
+
+        return applied;
+    }
+
+
+  private:
+    uint _preCount, _postCount;
+}
+
+
+// unittest
+version(SIGRE_TEST_MODE) static this()
+{
+    alias C = Complex!float;
+
+    string[] args = ["2", "3"];
+    C[] xs = [C(1, 0), C(2, 1), C(3, 2), C(4, 3), C(5, 4)];
+
+    C[][] dst = new Delays!C(args).generate([xs]);
+
+    assert(dst.length == 6);        // pre 2 (future), post 3 (past), and original signal
+    foreach(n, e; dst[0]) assert(e == xs[n]);
+
+    foreach(i; 1 .. 4) foreach(n, e; dst[i]) assert(e == ((n >= i) ? xs[n - i] : C(0, 0)));
+    foreach(i; 1 .. 3) foreach(n, e; dst[3 + i]) assert(e == ((n + i < xs.length) ? xs[n + i] : C(0, 0)));
+}
+
+
 final class BFList(C) : IBasisBuildingBlock!C
 {
     this(string[] params)
@@ -313,41 +373,48 @@ final class BFList(C) : IBasisBuildingBlock!C
 
     C[][] generate(in C[][] xs)
     {
-        enforce(xs.length == 1, "[BFList] Invalid input dimension which must be 1.");
-        return generateImpl(xs[0]);
+        // enforce(xs.length == 1, "[BFList] Invalid input dimension which must be 1.");
+        return generateImpl(xs);
     }
 
 
-    C[][] generateImpl(C)(in C[] xs)
+    C[][] generateImpl(C)(in C[][] xs)
     {
-        immutable nSamples = xs.length;
+        immutable nSamples = xs[0].length;
 
         C[][] applied = new C[][](_parsed.length, nSamples);
         foreach(i, p; _parsed) {
             switch(p.label) {
                 case 'X':
-                    enforce(p.value.length == 2, "[BFList.X] '%s' is invalid: The size of the index-pair must be two.".format(_originalParams[i]));
-                    enforce(p.options == [null, null], "[BFList.X] '%s' is invalid: The options are ignored.".format(_originalParams[i]));
-                    foreach(j; 0 .. nSamples)
-                        applied[i][j] = xs[j]^^(p.value[0]) * conj(xs[j])^^(p.value[1]);
-                    
+                    enforce(p.value.length % 2 == 0, "[BFList.X] '%s' is invalid: The size of the index-pair must be even.".format(_originalParams[i]));
+                    enforce(p.value.length / 2 <= xs.length, "[BFList.X] '%s' is invalid: The number of index-pairs must be less than or equal to the input dimension (=%d).".format(_originalParams[i], xs.length));
+                    applied[i][] = C(1, 0);
+                    foreach(k; 0 .. p.value.length / 2) {
+                        enforce(p.options[2*k] == null && p.options[2*k+1] == null, "[BFList.X] '%s' is invalid: The options are ignored.".format(_originalParams[i]));
+                        foreach(j; 0 .. nSamples)
+                            applied[i][j] *= xs[k][j]^^(p.value[2*k]) * conj(xs[k][j])^^(p.value[2*k+1]);
+                    }
                     break;
 
                 case 'L':
-                    enforce(p.value.length == 2, "[BFList.L] '%s' is invalid: The size of the index-pair must be two.".format(_originalParams[i]));
-                    enforce(p.options == [null, null], "[BFList.L] '%s' is invalid: The options are ignored.".format(_originalParams[i]));
-                    foreach(j; 0 .. nSamples)
-                        applied[i][j] = laguerreOBF(xs[j], p.value[0], p.value[1]);
-
+                    enforce(p.value.length % 2 == 0, "[BFList.L] '%s' is invalid: The size of the index-pair must be even.".format(_originalParams[i]));
+                    enforce(p.value.length / 2 <= xs.length, "[BFList.L] '%s' is invalid: The number of index-pairs must be less than or equal to the input dimension (=%d).".format(_originalParams[i], xs.length));
+                    applied[i][] = C(1, 0);
+                    foreach(k; 0 .. p.value.length / 2) {
+                        enforce(p.options[2*k] == null && p.options[2*k+1] == null, "[BFList.L] '%s' is invalid: The options are ignored.".format(_originalParams[i]));
+                        foreach(j; 0 .. nSamples)
+                            applied[i][j] *= laguerreOBF(xs[k][j], p.value[2*k], p.value[2*k+1]);
+                    }
                     break;
 
                 case 'M':
+                    enforce(xs.length == 1, "[BFList.M] Invalid input dimension which must be 1.");
                     foreach(j; 0 .. nSamples) {
                         applied[i][j] = C(1, 0);
                         foreach(k; 0 .. p.value.length) {
                             enforce(p.options[k] == "" || p.options[k] == "*", "[BFList.M] '%s' is invalid. Each option must be '' or '*'.".format(_originalParams[i]));
 
-                            immutable C v = (j >= p.value[k]) ? xs[j - p.value[k]] : C(0, 0);
+                            immutable C v = (j >= p.value[k]) ? xs[0][j - p.value[k]] : C(0, 0);
                             applied[i][j] *= p.options[k] == "*" ? conj(v) : v;
                         }
                     }
