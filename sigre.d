@@ -151,6 +151,83 @@ version(SIGRE_TEST_MODE) static this()
 }
 
 
+/** 最小二乗推定をする
+ * xsTrain: [nBF][nTrainSamples]
+ * ysTrain: [nTrainSamples]
+ * error: [nTrainSamples], ただし，先頭nTaps-1は学習に使わないため，そこはNaNで埋まっている
+ * return: [nBF][nTaps]
+ */
+C[][] estimateImpulseResponsesLS(C)(in C[][] xsTrain, in C[] ysTrain, size_t nTaps, ref C[] error)
+{
+    immutable nTrainSamples = xsTrain[0].length;
+    auto mx = slice!C(nTrainSamples - (nTaps-1), xsTrain.length * nTaps);
+    foreach(i; (nTaps-1) .. nTrainSamples) {
+        foreach(k; 0 .. xsTrain.length) {
+            foreach(j; 0 .. nTaps) {
+                mx[i - (nTaps-1), k * nTaps + j] = xsTrain[k][i - j];
+            }
+        }
+    }
+
+    C[] ysT = new C[nTrainSamples - (nTaps-1)];
+    ysT[] = ysTrain[nTaps-1 .. $];
+
+    // 最小二乗学習，mxやysTは上書きされてしまうのでコピーを渡す
+    auto est = leastSquareEstimateRowMajor(mx.dup, ysT.dup);
+
+    // 各基底ごとに分ける
+    auto ret = new C[][](xsTrain.length, nTaps);
+    foreach(i; 0 .. xsTrain.length) {
+        foreach(j; 0 .. nTaps) {
+            ret[i][j] = est[i * nTaps + j];
+        }
+    }
+
+    // 学習誤差を計算
+    error.length = ysTrain.length;
+    error[0 .. nTaps-1] = C(C.init.re.nan, C.init.im.nan);
+
+    auto err = slice!C(nTrainSamples - (nTaps-1)).vectored;
+    err.noalias = ysT.sliced.vectored - mx.matrixed * est.sliced.vectored;
+
+    foreach(i; nTaps-1 .. nTrainSamples) {
+        error[i] = err[i - (nTaps-1)];
+    }
+
+    // 推定パラメータを返す
+    return ret;
+}
+
+
+// unittest
+version(SIGRE_TEST_MODE) static this()
+{
+    alias C = Complex!float;
+
+    C[] xs = [C(1, 0), C(2, 1), C(1, 0), C(3, 3), C(-1, -5)];
+    C[] ys = [C(1, 0)*2, C(2, 1)*2, C(1, 0)*2, C(3, 3)*2, C(-1, -5)*2];
+
+    C[] error;
+    auto coeffs = estimateImpulseResponsesLS([xs], ys, 1, error);
+    assert(coeffs.length == 1 && coeffs[0].length == 1);
+    assert(approxEqualC(coeffs[0][0], C(2, 0)));
+    assert(error.length == ys.length);
+    foreach(i; 0 .. ys.length)
+        assert(approxEqualC(error[i], C(0)));
+
+    ys = [C(0, 0) + xs[0], xs[0] + xs[1], xs[1] + xs[2], xs[2] + xs[3], xs[3] + xs[4]];
+    coeffs = estimateImpulseResponsesLS([xs], ys, 2, error);
+    assert(coeffs.length == 1 && coeffs[0].length == 2);
+    assert(approxEqualC(coeffs[0][0], C(1, 0)));
+    assert(approxEqualC(coeffs[0][1], C(1, 0)));
+    assert(error.length == ys.length);
+    foreach(i; 1 .. ys.length)
+        assert(approxEqualC(error[i], C(0)));
+
+    assert(error[0].re.isNaN && error[0].im.isNaN);
+}
+
+
 interface IRegenerator(C)
 {
     C[] regenerate(in C[] xs);
@@ -210,20 +287,14 @@ final class PHammLSRegenerator(C) : IRegenerator!C
 
     C[] estimateCoeffs(in C[][] xsTrain, in C[] ysTrain, /*in C[][] xsRegen,*/ string[] params)
     {
-        immutable nTrainSamples = xsTrain[0].length;
-        auto mx = slice!C(nTrainSamples - _nTaps, _nBF * _nTaps);
-        foreach(i; _nTaps .. nTrainSamples) {
-            foreach(k; 0 .. _nBF) {
-                foreach(j; 0 .. _nTaps) {
-                    mx[i - _nTaps, k * _nTaps + j] = xsTrain[k][i - j];
-                }
-            }
-        }
+        C[] error;
+        C[][] est = estimateImpulseResponsesLS(xsTrain, ysTrain, _nTaps, error);
+        C[] ret = new C[_nBF * _nTaps];
+        foreach(i; 0 .. _nBF)
+            foreach(j; 0 .. _nTaps)
+                ret[i * _nTaps + j] = est[i][j];
 
-        C[] ysT = new C[nTrainSamples - _nTaps];
-        ysT[] = ysTrain[_nTaps .. $];
-        auto est = leastSquareEstimateRowMajor(mx, ysT);
-        return est;
+        return ret;
     }
 }
 
